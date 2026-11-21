@@ -14,9 +14,8 @@ data/*.tmp
 # Streamlit 로컬 설정·비밀
 .streamlit/secrets.toml
 
-# Windows 실행 배치 파일 / 로컬 테스트
+# Windows 실행 배치 파일 (PC 경로 전용)
 *.bat
-test_app.py
 
 # OS / 편집기
 .DS_Store
