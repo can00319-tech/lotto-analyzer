@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 로컬 런타임 캐시 (동행복권에서 새로 수집되는 데이터)
+data/draws.json
+data/history.json
+data/meta.json
+data/*.tmp
+
+# Streamlit 로컬 설정·비밀
+.streamlit/secrets.toml
+
+# Windows 실행 배치 파일 / 로컬 테스트
+*.bat
+test_app.py
+
+# OS / 편집기
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
