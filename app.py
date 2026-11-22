@@ -325,11 +325,81 @@ def auto_sync(draws: list[dict]) -> tuple[list[dict], str | None]:
 
 
 # ---------------------------------------------------------------- 기록 계층 ----
-def load_history() -> list[dict]:
-    payload = load_json(HISTORY_PATH)
-    recs = _records_from(payload)
+# 기록은 두 곳에 저장될 수 있다.
+#   1) 로컬 실행(동철님 PC)      → data/history.json      (기본값)
+#   2) Streamlit Cloud 배포       → 구글 시트 웹 앱(GSHEET_WEBAPP_URL + GSHEET_TOKEN)
+# 시트 모드에서는 위젯 조작마다 네트워크를 왕복하지 않도록 session_state에 캐시한다.
+HISTORY_COLUMNS = ["created_at", "target_round", "mode", "numbers",
+                   "score_json", "filters_json"]
+HISTORY_CACHE_KEY = "history_cache"
+HISTORY_CACHE_TTL = 60.0        # 캐시 유효 시간(초)
+HISTORY_ERROR_KEY = "history_error"
+
+
+def _setting(name: str) -> str:
+    """st.secrets → 환경변수 순서로 설정값을 찾는다(테스트·로컬 실행 대비)."""
+    try:
+        value = st.secrets.get(name)      # type: ignore[attr-defined]
+    except Exception:
+        value = None
+    if value:
+        return str(value).strip()
+    return str(os.environ.get(name) or "").strip()
+
+
+def gsheet_config() -> tuple[str, str]:
+    """(웹 앱 URL, 비밀 토큰). URL이 비어 있으면 로컬 파일 모드."""
+    return _setting("GSHEET_WEBAPP_URL"), _setting("GSHEET_TOKEN")
+
+
+def storage_mode() -> str:
+    return "gsheet" if gsheet_config()[0] else "local"
+
+
+def storage_label() -> str:
+    return "구글 시트 연동 중" if storage_mode() == "gsheet" else "로컬 파일"
+
+
+def storage_target() -> str:
+    return "구글 시트 '로또 분석기 추천 기록'" if storage_mode() == "gsheet" else str(HISTORY_PATH)
+
+
+def save_error_text() -> str:
+    if storage_mode() == "gsheet":
+        return "구글 시트에 반영하지 못했습니다"
+    return "기록 파일에 저장하지 못했습니다(권한 확인)"
+
+
+def _gsheet_call(method: str, payload: dict | None = None) -> dict:
+    """Apps Script 웹 앱 호출. 웹 앱은 302 리다이렉트로 응답하므로
+    requests가 리다이렉트를 따라가 결과 JSON을 읽는다."""
+    url, token = gsheet_config()
+    if not url:
+        raise RuntimeError("GSHEET_WEBAPP_URL 이 설정되지 않았습니다.")
+    body = {"token": token}
+    if payload:
+        body.update(payload)
+    try:
+        if method.upper() == "GET":
+            resp = requests.get(url, params={"token": token},
+                                timeout=(4.0, 25.0), allow_redirects=True)
+        else:
+            resp = requests.post(url, json=body, timeout=(4.0, 45.0),
+                                 allow_redirects=True)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:                  # 네트워크·JSON 오류 모두 방어
+        raise RuntimeError(f"구글 시트 연결 실패({exc})") from exc
+    if not isinstance(data, dict) or not data.get("ok"):
+        reason = data.get("error") if isinstance(data, dict) else "응답 형식 오류"
+        raise RuntimeError(f"구글 시트 응답 오류({reason})")
+    return data
+
+
+def _normalize_history(recs) -> list[dict]:
+    """저장 방식과 무관하게 쓰는 공통 정리·검증."""
     out = []
-    for r in recs:
+    for r in recs or []:
         if not isinstance(r, dict):
             continue
         nums = r.get("numbers")
@@ -343,12 +413,72 @@ def load_history() -> list[dict]:
             continue
         rr = dict(r)
         rr["numbers"] = nums
+        rr["score"] = rr.get("score") or {}
+        rr["filters"] = rr.get("filters") or {}
+        if rr.get("target_round") is not None:
+            try:
+                rr["target_round"] = int(rr["target_round"])
+            except (TypeError, ValueError):
+                rr["target_round"] = None
+        if not rr.get("id"):
+            tail = "-".join(f"{n:02d}" for n in nums)
+            rr["id"] = f"{rr.get('created_at') or ''}-{tail}"
         out.append(rr)
     out.sort(key=lambda x: str(x.get("created_at") or ""))
     return out
 
 
+def sheet_rows(records: list[dict]) -> list[dict]:
+    """시트에 쓸 6개 열만 추린다(헤더: HISTORY_COLUMNS)."""
+    rows = []
+    for r in records:
+        rows.append({
+            "created_at": r.get("created_at"),
+            "target_round": r.get("target_round"),
+            "mode": r.get("mode"),
+            "numbers": list(r.get("numbers") or []),
+            "score": r.get("score") or {},
+            "filters": r.get("filters") or {},
+        })
+    return rows
+
+
+def load_history(force: bool = False) -> list[dict]:
+    """추천 기록을 읽는다. 시트 모드는 세션 캐시를 먼저 쓰고,
+    실패하면 캐시로 계속 동작한다(앱은 죽지 않는다)."""
+    if storage_mode() == "gsheet":
+        cache = st.session_state.get(HISTORY_CACHE_KEY)
+        now = time.time()
+        if not force and cache and now - float(cache.get("ts") or 0) < HISTORY_CACHE_TTL:
+            return [dict(r) for r in cache.get("records") or []]
+        try:
+            data = _gsheet_call("GET")
+            records = _normalize_history(data.get("records"))
+        except RuntimeError as exc:
+            st.session_state[HISTORY_ERROR_KEY] = str(exc)
+            if cache:
+                return [dict(r) for r in cache.get("records") or []]
+            return []
+        st.session_state[HISTORY_ERROR_KEY] = None
+        st.session_state[HISTORY_CACHE_KEY] = {"ts": now, "records": records}
+        return [dict(r) for r in records]
+
+    payload = load_json(HISTORY_PATH)
+    return _normalize_history(_records_from(payload))
+
+
 def save_history(records: list[dict]) -> bool:
+    """기록 전체를 저장한다. 성공하면 세션 캐시도 함께 갱신한다."""
+    if storage_mode() == "gsheet":
+        try:
+            _gsheet_call("POST", {"records": sheet_rows(records)})
+        except RuntimeError as exc:
+            st.session_state[HISTORY_ERROR_KEY] = str(exc)
+            return False
+        st.session_state[HISTORY_ERROR_KEY] = None
+        st.session_state[HISTORY_CACHE_KEY] = {
+            "ts": time.time(), "records": _normalize_history(records)}
+        return True
     return save_json(HISTORY_PATH, {"version": 1, "records": records})
 
 
@@ -908,6 +1038,14 @@ with st.sidebar:
         )
     st.caption({"cache": "현재 데이터: 로컬 캐시", "seed": "현재 데이터: 내장 데이터",
                 "network": "현재 데이터: 방금 내려받음", "empty": "현재 데이터: 없음"}.get(source, source))
+    st.divider()
+    st.caption(f"🗂️ 추천 기록 저장소: {storage_label()}")
+    if storage_mode() == "gsheet":
+        st.caption("추천 기록은 구글 시트('로또 분석기 추천 기록')에 저장됩니다.")
+        if st.button("🔄 시트에서 기록 새로고침", width="stretch", key="side_refresh",
+                     help="구글 시트에 저장된 최신 기록을 다시 읽어옵니다"):
+            load_history(force=True)
+            st.rerun()
     if auto_msg == "auto_failed":
         st.caption("최신 회차 자동 확인에 실패해 캐시 데이터로 표시 중입니다. "
                    "위 업데이트 버튼으로 다시 시도할 수 있습니다.")
@@ -923,6 +1061,12 @@ df = build_frame(draws)
 profile = build_profile(df)
 history = load_history()
 saved_sets = history_sets(history)
+if st.session_state.get(HISTORY_ERROR_KEY):
+    st.warning(
+        f"추천 기록 저장소({storage_label()}) 연결에 문제가 있습니다. "
+        f"{st.session_state[HISTORY_ERROR_KEY]} — 새 기록 저장·삭제가 되지 않을 수 있습니다. "
+        "사이드바의 '시트에서 기록 새로고침'으로 다시 시도해 주세요."
+    )
 
 latest = draws[-1]
 try:
@@ -1102,7 +1246,7 @@ with tab_maker:
                     st.success(f"{len(combos)}개 조합을 생성하고 추천 기록에 저장했습니다. "
                                f"(시도 {attempts:,}회)")
                 else:
-                    st.warning("조합은 생성했지만 기록 파일에 저장하지 못했습니다(권한 확인).")
+                    st.warning("조합은 생성했지만 " + save_error_text() + ".")
                 st.session_state["generated"] = [
                     {"numbers": c, "score": sc} for c, sc in scored]
             elif attempts:
@@ -1238,7 +1382,7 @@ with tab_draw:
                     "success", f"{target_round}회 대상 조합을 추천 기록에 저장했습니다.")
                 st.rerun()
             else:
-                st.warning("기록 파일에 저장하지 못했습니다(권한 확인).")
+                st.warning(save_error_text() + ".")
         st.caption("애니메이션이 보이지 않는 환경이면 위의 번호가 실제 결과입니다.")
     else:
         st.info("'추첨 시작'을 눌러 주세요.")
@@ -1288,9 +1432,9 @@ with tab_log:
                     st.success(f"삭제했습니다: {' '.join(f'{n:02d}' for n in removed['numbers'])}")
                     st.rerun()
                 else:
-                    st.error("파일에 반영하지 못했습니다(권한 확인).")
+                    st.error(save_error_text() + ".")
 
     st.caption(
-        "기록 파일: " + str(HISTORY_PATH) + " · 생성일·대상 회차별로 저장되며, "
+        f"기록 저장소: {storage_label()} · {storage_target()} · 생성일·대상 회차별로 저장되며, "
         "새 조합은 기존 기록과 겹치지 않게 만들어집니다."
     )

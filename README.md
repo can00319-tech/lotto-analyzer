@@ -79,7 +79,32 @@ streamlit run app.py
 인터넷이 없어도 **내장 데이터(1250회차)** 로 모든 분석·조합·추첨 기능을 쓸 수 있습니다.
 업데이트 버튼만 "연결하지 못했습니다" 안내를 보여 주고, 나머지는 그대로 동작합니다.
 
-## 5. 검증
+## 5. 클라우드 배포 — 구글 시트에 기록 저장
+
+Streamlit Community Cloud처럼 파일이 다시 배포될 때 초기화되는 환경에서는
+`data/history.json`이 사라집니다. 배포판은 추천 기록을 **구글 시트**에 남기도록 바꿀 수 있습니다.
+
+1) 구글 시트(`로또 분석기 추천 기록`)와 Apps Script 웹 앱을 준비합니다.
+   - 시트 탭 `기록`, 1행 헤더: `created_at, target_round, mode, numbers, score_json, filters_json`
+   - `Code.gs`가 비밀 토큰(`GSHEET_TOKEN`)을 검증하고 `doGet`(전체 행 JSON 반환)·`doPost`(헤더+행 전체 덮어쓰기)를 처리
+   - `배포 > 새 배포 > 유형: 웹 앱`(실행 주체: 나, 액세스 권한: 모든 사용자) → `https://script.google.com/macros/s/.../exec`
+2) Streamlit Cloud의 `Settings > Secrets`에 두 값을 넣고 앱을 재시작합니다.
+
+```toml
+GSHEET_WEBAPP_URL = "https://script.google.com/macros/s/.../exec"
+GSHEET_TOKEN = "웹 앱 Code.gs와 같은 토큰"
+```
+
+동작 방식:
+
+- 두 값이 없으면 예전처럼 `data/history.json`을 씁니다(PC 로컬 실행은 그대로).
+- 시트 모드는 세션에 60초 캐시를 두어 위젯을 조작할 때마다 네트워크를 왕복하지 않고,
+  저장·삭제가 성공하면 캐시를 바로 갱신합니다.
+- 웹 앱 호출이 실패하면 안내 문구만 보여 주고 앱은 캐시(없으면 빈 목록)로 계속 동작합니다.
+- 사이드바에 현재 저장소(`구글 시트 연동 중` / `로컬 파일`)가 표시되고,
+  시트 모드에서는 `🔄 시트에서 기록 새로고침` 버튼이 생깁니다.
+
+## 6. 검증
 
 ```bash
 python3 -m py_compile app.py     # 문법 검사
@@ -94,8 +119,10 @@ python3 test_app.py              # Streamlit AppTest 스모크 테스트(임시 
 4. 추첨기 결과 생성·재추첨·기록 저장
 5. 기록 화면 CSV 다운로드, 기록 삭제
 6. 캐시 파일이 손상돼도 내장 데이터로 자동 복구
+7. 구글 시트 모드(가짜 웹 앱 대역) — `구글 시트 연동 중` 표시, 저장 POST, 캐시 사용,
+   새 세션에서 시트 기록 읽기, 연결 실패 시 안내
 
-## 6. 폴더 구조
+## 7. 폴더 구조
 
 ```
 lotto-analyzer/

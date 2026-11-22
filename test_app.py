@@ -42,6 +42,97 @@ def new_app() -> AppTest:
     return at
 
 
+class FakeResp:
+    """구글 시트 웹 앱 응답 대역(요청은 실제로 나가지 않는다)."""
+
+    def __init__(self, payload: dict, status: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def element_text(at: AppTest) -> str:
+    """화면에 뜬 문구를 종류를 가리지 않고 한 문자열로 모은다."""
+    parts = []
+    for kind in ("caption", "markdown", "warning", "info", "success", "error", "text"):
+        try:
+            for el in at.get(kind):
+                parts.append(str(getattr(el, "value", "") or ""))
+        except Exception:
+            continue
+    return " ".join(parts)
+
+
+def gsheet_test() -> None:
+    """구글 시트 모드: 저장·조회·캐시·장애 대응을 가짜 웹 앱으로 검증."""
+    import requests as _requests
+
+    store = {"records": []}
+    calls = {"get": 0, "post": 0}
+
+    def fake_get(url, params=None, timeout=None, allow_redirects=True):
+        calls["get"] += 1
+        if (params or {}).get("token") != "test-token":
+            return FakeResp({"ok": False, "error": "unauthorized"})
+        return FakeResp({"ok": True, "count": len(store["records"]),
+                          "records": json.loads(json.dumps(store["records"]))})
+
+    def fake_post(url, json=None, timeout=None, allow_redirects=True):
+        calls["post"] += 1
+        body = json or {}
+        if body.get("token") != "test-token":
+            return FakeResp({"ok": False, "error": "unauthorized"})
+        store["records"] = body.get("records") or []
+        return FakeResp({"ok": True, "count": len(store["records"])})
+
+    def fail_get(url, params=None, timeout=None, allow_redirects=True):
+        calls["get"] += 1
+        raise RuntimeError("network down")
+
+    os.environ["GSHEET_WEBAPP_URL"] = "https://script.google.com/macros/s/test/exec"
+    os.environ["GSHEET_TOKEN"] = "test-token"
+    old_get, old_post = _requests.get, _requests.post
+    _requests.get, _requests.post = fake_get, fake_post
+    try:
+        at = new_app()
+        check("시트 모드 예외 없음", not at.exception, str(at.exception))
+        text = element_text(at)
+        check("'구글 시트 연동 중' 표시", "구글 시트 연동 중" in text, text[:160])
+
+        at.button(key="gen_btn").click().run()
+        check("시트 저장(POST) 1회", calls["post"] == 1, str(calls))
+        check("시트에 5행 기록", len(store["records"]) == 5, f"{len(store['records'])}행")
+        rec = store["records"][0] if store["records"] else {}
+        check("행이 6개 열 형식", set(rec) == {"created_at", "target_round", "mode",
+                                             "numbers", "score", "filters"}, str(sorted(rec)))
+        check("행 번호 6개", len(rec.get("numbers") or []) == 6, str(rec.get("numbers")))
+
+        gets = calls["get"]
+        at.slider(key="sum_range").set_value((120, 180)).run()
+        check("위젯 조작 시 캐시 사용(GET 호출 없음)", calls["get"] == gets,
+              f"{gets} → {calls['get']}")
+
+        at2 = new_app()
+        metrics = {m.label: m.value for m in at2.metric}
+        check("새 세션에서 시트 기록 5건 읽기", metrics.get("전체 기록") == "5건", str(metrics))
+
+        _requests.get = fail_get
+        at3 = new_app()
+        check("연결 실패에도 앱 실행", not at3.exception, str(at3.exception))
+        check("연결 실패 안내 표시", "연결에 문제가 있습니다" in element_text(at3),
+              element_text(at3)[:200])
+    finally:
+        _requests.get, _requests.post = old_get, old_post
+        os.environ.pop("GSHEET_WEBAPP_URL", None)
+        os.environ.pop("GSHEET_TOKEN", None)
+
+
 def main() -> int:
     env = make_env()
     data_dir = env / "data"
@@ -139,6 +230,10 @@ def main() -> int:
     at3 = new_app()
     check("손상 캐시에서도 실행", not at3.exception, str(at3.exception))
     check("시드로 자동 복구", len(at3.dataframe) >= 2)
+
+    # 7) 구글 시트 모드 (웹 앱 호출은 가짜로 대체)
+    print("\n[7] 구글 시트 모드")
+    gsheet_test()
 
     print("\n" + ("=" * 46))
     if failures:
