@@ -205,15 +205,19 @@ def seed_count() -> int:
 
 
 def load_draws() -> tuple[list[dict], str]:
-    """캐시 → 내장 시드 → 원격 전체 수집 순으로 확보. (draws, source)"""
-    payload = load_json(DRAWS_PATH)
-    draws = _dedupe_sorted(_records_from(payload))
+    """캐시 + 내장 시드 → 원격 전체 수집 순으로 확보. (draws, source)
+
+    캐시와 내장 시드를 합쳐 쓴다. 새 버전을 배포해 시드가 캐시보다 최신이면
+    (Streamlit Cloud에 이전 draws.json이 남아 있는 경우 등) 시드의 최신 회차가
+    바로 반영되고, 캐시에만 있는 회차(네트워크로 받은 것)는 그대로 유지된다.
+    """
+    cached = _dedupe_sorted(_records_from(load_json(DRAWS_PATH)))
+    seed = seed_draws()
+    draws = _dedupe_sorted(list(cached) + list(seed))
     if draws:
-        return draws, "cache"
-    draws = seed_draws()
-    if draws:
-        save_json(DRAWS_PATH, draws)
-        return draws, "seed"
+        if draws != cached:
+            save_json(DRAWS_PATH, draws)
+        return draws, ("cache" if cached else "seed")
     try:
         draws = fetch_all_rounds()
     except RuntimeError:

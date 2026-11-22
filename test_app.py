@@ -241,8 +241,18 @@ def main() -> int:
     check("손상 캐시에서도 실행", not at3.exception, str(at3.exception))
     check("시드로 자동 복구", len(at3.dataframe) >= 2)
 
-    # 7) 구글 시트 모드 (웹 앱 호출은 가짜로 대체)
-    print("\n[7] 구글 시트 모드")
+    # 7) 오래된 캐시 + 새 시드 — 새 버전 배포 직후(Streamlit Cloud) 상황
+    print("\n[7] 오래된 캐시 + 새 시드")
+    cache.write_text(json.dumps(draws[:-1], ensure_ascii=False), encoding="utf-8")
+    at4 = new_app()
+    check("오래된 캐시에서도 예외 없음", not at4.exception, str(at4.exception))
+    merged = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else []
+    check("시드 최신 회차로 자동 반영", bool(merged) and merged[-1]["drwNo"] == expected_latest,
+          str(merged[-1]["drwNo"] if merged else None))
+    check("회차 수도 시드와 같음", len(merged) == len(draws), f"{len(merged)} vs {len(draws)}")
+
+    # 8) 구글 시트 모드 (웹 앱 호출은 가짜로 대체)
+    print("\n[8] 구글 시트 모드")
     gsheet_test()
 
     print("\n" + ("=" * 46))
