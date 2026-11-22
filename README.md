@@ -54,7 +54,7 @@ streamlit run app.py
 
 | 경로 | 설명 |
 |---|---|
-| `data/seed_draws.json` | 내장 기본 데이터(1~1250회차, 2026-11-14 기준). 처음 실행할 때 `draws.json`으로 복사됩니다. |
+| `data/seed_draws.json` | 내장 기본 데이터(1~1251회차, 2026-11-21 기준). 처음 실행할 때 `draws.json`으로 복사됩니다. |
 | `data/draws.json` | 로컬 캐시. 앱의 모든 분석은 이 파일을 기준으로 동작합니다. |
 | `data/history.json` | 추천 기록(생성 시각·대상 회차·번호·점수·필터). CSV로 내려받을 수 있습니다. |
 | `data/meta.json` | 마지막 자동 확인 시각(1시간에 한 번만 서버를 확인합니다). |
@@ -64,6 +64,10 @@ streamlit run app.py
 - 앱을 열면 **1시간에 한 번** 최신 회차를 조용히 확인합니다(실패해도 앱은 그대로 동작).
 - 사이드바 **🔄 최신 회차 업데이트** — 최신 회차만 받아 증분 추가.
 - 사이드바 **📥 전체 데이터 다시 받기** — 1회차부터 전부 다시 받아 캐시 재생성.
+- `python3 update_draws.py` — **매주 토요일 밤** 추첨 후 실행하면 마지막 저장 회차 다음부터
+  최신 회차까지를 받아 `data/seed_draws.json`에 반영합니다(중복 제거·오름차순 정렬).
+  새 회차가 있으면 `ADDED: 1251`, 이미 최신이면 `UP_TO_DATE: 1251`을 출력합니다.
+  갱신된 시드를 커밋·푸시해야 Streamlit Cloud 앱에도 반영됩니다.
 - 동행복권은 공식 API를 제공하지 않습니다. 앱은 사이트가 쓰는 아래 주소를 사용합니다.
   - 최신 회차: `https://www.dhlottery.co.kr/lt645/selectPstLt645Info.do`
   - 지정 회차 ±10회차: `…/lt645/selectPstLt645InfoNew.do?srchDir=center&srchLtEpsd={회차}`
@@ -76,7 +80,7 @@ streamlit run app.py
 
 ### 네트워크가 막힌 환경
 
-인터넷이 없어도 **내장 데이터(1250회차)** 로 모든 분석·조합·추첨 기능을 쓸 수 있습니다.
+인터넷이 없어도 **내장 데이터(1251회차)** 로 모든 분석·조합·추첨 기능을 쓸 수 있습니다.
 업데이트 버튼만 "연결하지 못했습니다" 안내를 보여 주고, 나머지는 그대로 동작합니다.
 
 ## 5. 클라우드 배포 — 구글 시트에 기록 저장
@@ -107,7 +111,7 @@ GSHEET_TOKEN = "웹 앱 Code.gs와 같은 토큰"
 ## 6. 검증
 
 ```bash
-python3 -m py_compile app.py     # 문법 검사
+python3 -m py_compile app.py update_draws.py   # 문법 검사
 python3 test_app.py              # Streamlit AppTest 스모크 테스트(임시 폴더 사용)
 ```
 
@@ -127,6 +131,7 @@ python3 test_app.py              # Streamlit AppTest 스모크 테스트(임시 
 ```
 lotto-analyzer/
 ├── app.py                 # 앱 본체(단일 파일)
+├── update_draws.py        # 최신 회차를 seed_draws.json에 반영하는 스크립트
 ├── requirements.txt
 ├── README.md
 ├── test_app.py            # AppTest 스모크 테스트

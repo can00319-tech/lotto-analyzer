@@ -57,6 +57,13 @@ class FakeResp:
         return self._payload
 
 
+def seed_latest_round() -> int:
+    """내장 시드의 마지막 회차(시드를 갱신해도 테스트가 따라가도록)."""
+    payload = json.loads((HERE / "data" / "seed_draws.json").read_text(encoding="utf-8"))
+    records = payload if isinstance(payload, list) else payload.get("draws") or []
+    return max((r["drwNo"] for r in records), default=0)
+
+
 def element_text(at: AppTest) -> str:
     """화면에 뜬 문구를 종류를 가리지 않고 한 문자열로 모은다."""
     parts = []
@@ -146,7 +153,10 @@ def main() -> int:
     check("캐시 파일 생성", cache.exists())
     draws = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else []
     check("회차 수 1,200 이상", len(draws) >= 1200, f"{len(draws)}회차")
-    check("최신 회차 1,250", draws and draws[-1]["drwNo"] == 1250)
+    expected_latest = seed_latest_round()
+    check(f"최신 회차 {expected_latest:,}",
+          bool(draws) and draws[-1]["drwNo"] == expected_latest,
+          str(draws[-1]["drwNo"] if draws else None))
     labels = [m.label for m in at.metric]
     check("최신 회차 지표 표시", "최신 회차" in labels, str(labels))
     check("탭 4개", len(at.tabs) == 4, str([t.label for t in at.tabs] if at.tabs else []))
